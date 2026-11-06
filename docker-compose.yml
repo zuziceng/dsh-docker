@@ -1,0 +1,88 @@
+# deepseek-harness（dsh）运行栈：应用容器 + Caddy 入口。
+#
+# 镜像由 GitHub Actions 按上游 release 自动构建：
+#   ghcr.io/<owner>/<repo>/deepseek-harness:latest   最新正式版（上游暂无则跳过）
+#   ghcr.io/<owner>/<repo>/deepseek-harness:rc       最新 release（含 rc/alpha）
+#
+# 用法：
+#   cp .env.example .env && vi .env    # 至少填 LAN_HOST
+#   docker compose up -d
+#   docker logs -f deepseek-harness    # 带 ?token= 的登录地址在这里
+#
+# 换镜像源或指向本地构建的 tag：改 .env 的 DSH_IMAGE。
+name: deepseek-harness
+
+networks:
+  deepseek-harness-net:
+    name: deepseek-harness-net
+
+services:
+  deepseek-harness:
+    image: ${DSH_IMAGE:-ghcr.io/zuziceng/dsh-docker/deepseek-harness:rc}
+    container_name: deepseek-harness
+    restart: unless-stopped
+    # dsh 的 workspace-write 沙箱（bubblewrap）要创建 user namespace
+    security_opt:
+      - seccomp=unconfined
+    cap_add:
+      - SYS_ADMIN
+    networks:
+      - deepseek-harness-net
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      DSH_HOME: /data/dsh
+      # 一次性登录 token 落盘路径（Caddy 用它做首次访问自动登录；不用 Caddy 可留空）
+      DSH_TOKEN_FILE: /shared/token
+      # 可选：外部访问地址与额外信任 Host。Caddy 已把上游 Host 统一改写为
+      # 127.0.0.1:3080，cookie 与信任围栏都按该值对齐，局域网任意 IP/域名都
+      # 能访问，正常无需配置；仅在绕过 Caddy 直连应用时才按实际地址填。
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:-}
+      # 传给 custom-scripts 的变量
+      EXTRA_APT_PACKAGES: ${EXTRA_APT_PACKAGES:-}
+      PIP_PACKAGES: ${PIP_PACKAGES:-}
+      APT_MIRROR: ${APT_MIRROR:-mirrors.tuna.tsinghua.edu.cn}
+      NPM_MIRROR: ${NPM_MIRROR:-https://registry.npmmirror.com}
+      PIP_MIRROR: ${PIP_MIRROR:-https://pypi.tuna.tsinghua.edu.cn/simple}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      - ./data/dsh:/data/dsh                 # 会话、凭据、workspace
+      - ./data/home:/home/dsh                # 运行用户 HOME：.npmrc、缓存、dotfiles
+      - ./data/python:/opt/python            # 持久化 Python venv
+      - ./data/tools:/opt/tools              # 自定义工具集（bin/ 在 PATH）
+      - ./custom-scripts:/custom-scripts:ro  # 启动期自定义脚本
+      - ./data/shared:/shared                # 登录 token（Caddy 只读）
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 局域网 HTTPS 入口：自签 TLS + 首次访问自动带 token 登录。
+  caddy:
+    image: caddy:2-alpine
+    container_name: deepseek-harness-caddy
+    restart: unless-stopped
+    depends_on:
+      - deepseek-harness
+    networks:
+      - deepseek-harness-net
+    ports:
+      - "${LAN_PORT:-3080}:${LAN_PORT:-3080}"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      LAN_HOST: ${LAN_HOST:-}
+      ET_HOST: ${ET_HOST:-}
+      LAN_PORT: ${LAN_PORT:-3080}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Alpine 无 tzdata；不挂这个 TZ 会被忽略，日志停在 UTC
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
+      - ./data/caddy:/data                # 自签 CA 根与证书
+      - ./data/caddy-config:/config       # autosave 配置
+      - ./data/shared:/shared:ro          # 只读：登录 token
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

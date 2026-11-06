@@ -1,0 +1,13 @@
+# 构建上下文只需要 Dockerfile 和 entrypoint.sh；
+# 数据、私密配置、本地脚本一律不进镜像与 CI 构建上下文
+.git
+.github
+.atomcode
+.env
+.env.example
+data/
+custom-scripts/
+Caddyfile
+docker-compose*.yml
+README.md
+.gitignore

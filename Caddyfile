@@ -1,0 +1,59 @@
+# dsh 的 TLS 终结 + 首次访问登录引导。
+#
+# 站点地址与端口全部来自 .env（LAN_HOST / ET_HOST / LAN_PORT），换 IP 只改一处。
+# 证书用 Caddy 内置 CA —— 内网机器没有公网域名。
+{
+	# 浏览器对裸 IP 不发 SNI。没有默认名时 Caddy 挑不出证书，握手会以
+	# "internal error" 直接失败。
+	default_sni {$LAN_HOST}
+
+	# 只想去掉 80 → 443 的跳转；证书签发不能被关掉。
+	auto_https disable_redirects
+
+	# 根证书由客户端手工安装，容器内不装信任。
+	skip_install_trust
+}
+
+https://{$LAN_HOST}:{$LAN_PORT}, https://{$ET_HOST:127.0.0.1}:{$LAN_PORT} {
+	# 站点地址是宿主机 IP，容器内不存在，所以监听所有接口而不是绑定到它。
+	bind 0.0.0.0
+	tls internal
+
+	# 可选：在 dsh 自身的 token/cookie 认证之外再叠一层 HTTP Basic 认证。
+	# 生成哈希：docker run --rm -it caddy:2-alpine caddy hash-password
+	# basic_auth {
+	# 	alice <caddy hash-password 的输出>
+	# }
+
+	# 登录由 dsh 自己的应答决定，不去猜 cookie：dsh 的 cookie 名是
+	# dsh-auth-<随机串>，且每次启动重签签名密钥，浏览器完全可能拿着格式完好
+	# 但已失效的 cookie，靠它放行只会得到一张裸 401 页。所以每个 token 只跳
+	# 一次，之后把 401 原样透传。token 按请求从共享卷读取 —— dsh 重启换了
+	# token，这份配置不用动。两道护栏是必需的：去掉 `not query` 会在 token
+	# 文件还没写出来时无限跳转。
+	reverse_proxy deepseek-harness:3081 {
+		header_up X-Forwarded-Proto https
+
+		# 把上游看到的 Host 统一改写成 dsh 自身的监听地址。dsh 的会话 cookie
+		# 按 Host authority 绑定签名，恒定值让签发与校验始终一致 —— 局域网内
+		# 任意 IP/域名共用一套登录态，不必逐个维护 --trusted-host。
+		header_up Host 127.0.0.1:3080
+
+		# dsh 的浏览器信任栅栏要求 Origin 的 authority 与 Host 相同。Host 被上
+		# 一行改写后，浏览器发来的 Origin 仍是真实访问地址，两者不一致会让
+		# /api/remote.mux 的 WebSocket 升级直接 403，页面表现为一直「重新连接
+		# 中」。把 Origin 对齐到同一个 authority 即可；cookie 的
+		# SameSite=Strict、token 引导和 sec-fetch-site 检查都不受影响。
+		header_up Origin http://127.0.0.1:3080
+
+		@unauth status 401
+		handle_response @unauth {
+			@page {
+				method GET
+				path /
+				not query token=*
+			}
+			redir @page "/?token={file./shared/token}" 302
+		}
+	}
+}
