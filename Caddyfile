@@ -1,11 +1,13 @@
 # dsh 的 TLS 终结 + 首次访问登录引导。
 #
-# 站点地址与端口全部来自 .env（LAN_HOST / ET_HOST / LAN_PORT），换 IP 只改一处。
-# 证书用 Caddy 内置 CA —— 内网机器没有公网域名。
+# 站点地址与端口来自 .env（LAN_HOST / ET_HOST / LAN_PORT），换 IP 只改一处。
+# 证书两种来源，由 caddy-entrypoint.sh 决定：
+#   1. data/caddy/certs/dsh.crt —— ./gen-cert.sh 生成的多地址证书（推荐）
+#   2. 没生成时回退 Caddy 内置 CA，只覆盖 LAN_HOST 里的第一个地址
 {
-	# 浏览器对裸 IP 不发 SNI。没有默认名时 Caddy 挑不出证书，握手会以
-	# "internal error" 直接失败。
-	default_sni {$LAN_HOST}
+	# 仅回退模式需要：浏览器访问裸 IP 时不发 SNI，Caddy 挑不出证书，
+	# 握手会以 "internal error" 失败，所以给一个默认名字。
+	{$SNI_DIRECTIVE}
 
 	# 只想去掉 80 → 443 的跳转；证书签发不能被关掉。
 	auto_https disable_redirects
@@ -14,10 +16,10 @@
 	skip_install_trust
 }
 
-https://{$LAN_HOST}:{$LAN_PORT}, https://{$ET_HOST:127.0.0.1}:{$LAN_PORT} {
-	# 站点地址是宿主机 IP，容器内不存在，所以监听所有接口而不是绑定到它。
+# 监听所有接口、所有 Host —— 证书已覆盖全部入口地址，不按 Host 分流。
+https://:{$LAN_PORT} {
 	bind 0.0.0.0
-	tls internal
+	{$TLS_DIRECTIVE}
 
 	# 可选：在 dsh 自身的 token/cookie 认证之外再叠一层 HTTP Basic 认证。
 	# 生成哈希：docker run --rm -it caddy:2-alpine caddy hash-password

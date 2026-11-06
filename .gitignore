@@ -9,3 +9,6 @@ data/
 dsh.sh
 *.log
 *.bak
+
+# gen-cert.sh 产出的本地证书（含 CA 私钥）
+/certs/

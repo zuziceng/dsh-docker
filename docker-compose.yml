@@ -6,6 +6,7 @@
 #
 # 用法：
 #   cp .env.example .env && vi .env    # 至少填 LAN_HOST
+#   ./gen-cert.sh                      # 一次，生成覆盖全部本机地址的证书
 #   docker compose up -d
 #   docker logs -f deepseek-harness    # 带 ?token= 的登录地址在这里
 #
@@ -67,8 +68,12 @@ services:
       - deepseek-harness
     networks:
       - deepseek-harness-net
+    # 入口脚本只做一件事：挑出 TLS 指令（静态多地址证书 / 内置 CA 兜底）。
+    entrypoint: ["/bin/sh", "/caddy-entrypoint.sh"]
     ports:
-      - "${LAN_PORT:-3080}:${LAN_PORT:-3080}"
+      - "${LAN_PORT:-3080}:${LAN_PORT:-3080}/tcp"
+      # Caddy 会广播 alt-svc: h3，缺了这条 UDP 映射浏览器每次都先试 QUIC 再回落
+      - "${LAN_PORT:-3080}:${LAN_PORT:-3080}/udp"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       LAN_HOST: ${LAN_HOST:-}
@@ -76,11 +81,13 @@ services:
       LAN_PORT: ${LAN_PORT:-3080}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-entrypoint.sh:/caddy-entrypoint.sh:ro
+      - ./certs:/certs:ro         # gen-cert.sh 产出的多地址证书
       # Alpine 无 tzdata；不挂这个 TZ 会被忽略，日志停在 UTC
       - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
-      - ./data/caddy:/data                # 自签 CA 根与证书
-      - ./data/caddy-config:/config       # autosave 配置
-      - ./data/shared:/shared:ro          # 只读：登录 token
+      - ./data/caddy:/data                   # 内置 CA（certs/ 子目录 Caddy 不碰）
+      - ./data/caddy-config:/config          # autosave 配置
+      - ./data/shared:/shared:ro             # 只读：登录 token
     logging:
       driver: json-file
       options:
